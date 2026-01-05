@@ -6,56 +6,64 @@
 //
 
 
-import Foundation
-import AI
+import SwiftUI
+import Combine
+import FoundationModels 
 
+@available(iOS 26.0, *)
 @MainActor
 class ChatViewModel: ObservableObject {
     @Published var messages: [ChatMessage] = []
-
-    private var chat: AIChat?
-
-    init() {
-        let config = AIModelConfiguration(
-            usage: .onDevice,                // Force on-device Foundation models
-            model: .foundationSmall          // Use Foundation-Small or change to .foundationMedium
-        )
-
-        chat = AIChat(configuration: config)
-    }
+    @Published var isTyping = false
+    private let session = LanguageModelSession()
 
     func sendMessage(_ text: String) {
-        guard let chat = chat else { return }
-
-        let userMessage = ChatMessage(text: text, isUser: true)
-        messages.append(userMessage)
-
+        messages.append(ChatMessage(text: text, isUser: true))
         Task {
-            do {
-                let stream = try await chat.stream(text)
-                
-                var responseText = ""
-                for try await chunk in stream {
-                    responseText += chunk
-                    updateAssistantMessage(responseText)
-                }
-            } catch {
-                messages.append(ChatMessage(text: "Error: \(error.localizedDescription)", isUser: false))
-            }
+            await generateResponse(for: text)
         }
+    }
+    
+    func clearChat() {
+        messages.removeAll()
+        isTyping = false
+    } 
+
+    private func insertAssistantPlaceholder() {
+        messages.append(ChatMessage(text: "", isUser: false))
     }
 
     private func updateAssistantMessage(_ text: String) {
         if let last = messages.last, !last.isUser {
             messages[messages.count - 1].text = text
-        } else {
-            messages.append(ChatMessage(text: text, isUser: false))
+        }
+    }
+
+    private func generateResponse(for prompt: String) async {
+        isTyping = true
+
+        do {
+            let stream = session.streamResponse(to: prompt)
+            var hasInsertedMessage = false
+
+            for try await chunk in stream {
+                let content = chunk.content
+
+                if !hasInsertedMessage {
+                    // First chunk = replace typing bubble with real message
+                    hasInsertedMessage = true
+                    isTyping = false
+                    messages.append(ChatMessage(text: content, isUser: false))
+                } else {
+                    // Update the last assistant message
+                    messages[messages.count - 1].text = content
+                }
+            }
+        } catch {
+            isTyping = false
+            messages.append(ChatMessage(text: "Error: \(error.localizedDescription)", isUser: false))
         }
     }
 }
 
-struct ChatMessage: Identifiable {
-    let id = UUID()
-    var text: String
-    var isUser: Bool
-}
+
